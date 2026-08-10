@@ -3,162 +3,211 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Firebase File Explorer - Neon Factory</title>
+    <title>Firebase Firestore Explorer - Neon Factory</title>
+    <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
+    <!-- FontAwesome Icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
-        body { background-color: #1e1e1e; color: #d4d4d4; font-family: ui-monospace, monospace; }
-        .sidebar { background-color: #252526; border-right: 1px solid #333; }
-        .viewer { background-color: #1e1e1e; }
-        .hover-bg:hover { background-color: #2a2d2e; }
+        body { background-color: #020617; color: #d4d4d4; font-family: ui-monospace, monospace; user-select: none; }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #0f172a; }
+        ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+        .hover-bg:hover { background-color: #1e293b; }
+        .neon-text-blue { color: #60a5fa; text-shadow: 0 0 10px rgba(96, 165, 250, 0.8); }
     </style>
 </head>
 <body class="h-screen flex flex-col overflow-hidden">
 
-    <!-- Top Navigation -->
-    <header class="bg-[#333333] px-4 py-2 flex justify-between items-center text-xs border-b border-[#222]">
+    <!-- Top Navigation / Header -->
+    <header class="bg-slate-900 px-4 py-2.5 flex justify-between items-center text-xs border-b border-slate-800">
         <div class="flex items-center space-x-2">
             <i class="fa-solid fa-folder-open text-yellow-500"></i>
-            <span class="font-bold text-white">Project:</span> <span id="project-id-display" class="text-cyan-400">Loading...</span>
+            <span class="font-bold text-white">Firestore Project:</span> <span id="project-id-display" class="neon-text-blue">Connecting...</span>
         </div>
         <div id="connection-status" class="flex items-center space-x-1 text-yellow-400">
-            <i class="fa-solid fa-circle text-[8px]"></i> <span>Connecting to Firebase...</span>
+            <i class="fa-solid fa-circle text-[8px] animate-pulse"></i> <span>Initializing...</span>
         </div>
     </header>
 
     <!-- Main Explorer Layout -->
     <div class="flex flex-1 overflow-hidden">
         
-        <!-- Left Sidebar: File Tree Explorer -->
-        <aside class="sidebar w-1/3 min-w-[280px] flex flex-col">
-            <div class="p-2 text-[11px] font-bold uppercase tracking-wider text-zinc-400 border-b border-[#333] flex justify-between">
-                <span>Database Explorer</span>
-                <button onclick="loadDatabaseTree()" class="hover:text-white" title="Refresh Tree"><i class="fa-solid fa-rotate"></i></button>
+        <!-- Left Sidebar: Collection & Document Tree -->
+        <aside class="w-1/3 min-w-[300px] bg-slate-950 border-r border-slate-800 flex flex-col">
+            <div class="p-3 text-[11px] font-bold uppercase tracking-wider text-slate-400 border-b border-slate-800 flex justify-between items-center bg-slate-900/50">
+                <span>Database Structure</span>
+                <button onclick="loadFirestoreTree()" class="hover:text-white px-2 py-1 rounded bg-slate-800 border border-slate-700 transition" title="Refresh Tree"><i class="fa-solid fa-rotate"></i></button>
             </div>
-            <div id="file-tree" class="flex-1 overflow-y-auto p-2 text-sm">
-                <div class="text-zinc-500 p-2 text-xs">Initializing tree...</div>
+            <div id="file-tree" class="flex-1 overflow-y-auto p-2 text-xs space-y-1">
+                <div class="text-slate-500 p-2 italic">Scanning Firestore collections...</div>
             </div>
         </aside>
 
-        <!-- Right Pane: File/Node Viewer -->
-        <main class="viewer flex-1 flex flex-col overflow-hidden">
-            <div class="bg-[#2d2d2d] px-4 py-2 text-xs border-b border-[#333] flex items-center space-x-2 text-zinc-400">
-                <i class="fa-solid fa-file-lines"></i>
-                <span id="current-path">/ (root)</span>
+        <!-- Right Pane: Document Viewer -->
+        <main class="flex-1 flex flex-col overflow-hidden bg-slate-900/40">
+            <div class="bg-slate-900 px-4 py-2 text-xs border-b border-slate-800 flex items-center space-x-2 text-slate-400">
+                <i class="fa-solid fa-file-lines text-cyan-400"></i>
+                <span id="current-path">Select a document from the tree</span>
             </div>
             <div class="flex-1 p-4 overflow-auto">
-                <pre id="json-viewer" class="text-xs text-emerald-400 font-mono whitespace-pre-wrap">Select a node from the explorer tree to view its data.</pre>
+                <pre id="json-viewer" class="text-xs text-emerald-400 font-mono whitespace-pre-wrap">Click a collection folder to expand, and select a document to inspect its payload.</pre>
             </div>
         </main>
 
     </div>
 
-    <!-- Firebase Compat Scripts -->
-    <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-database-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-auth-compat.js"></script>
+    <!-- Firebase SDK (Modular ES Modules matching your working game) -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-    <script>
-        let db = null, auth = null, userId = null;
-        let isSaving = false, isVisiting = false, currentRoomId = null;
+        let db = null, auth = null;
         let fbAppId = 'neon-factory-party'; 
-        let username = localStorage.getItem('neon_username') || "Player_" + Math.floor(Math.random() * 9999);
 
         async function initFirebase() {
             const statusEl = document.getElementById('connection-status');
             try {
-                const configToUse = {
-                    apiKey: "AIzaSyCyNI7KZWUTt_wXWmVIfQCrGkTfhfSy8Vs", 
-                    authDomain: "uyif-19950.firebaseapp.com",
-                    databaseURL: "https://uyif-19950-default-rtdb.firebaseio.com", 
-                    projectId: "uyif-19950",
-                    storageBucket: "uyif-19950.firebasestorage.app", 
-                    messagingSenderId: "69721744423",
-                    appId: "1:69721744423:web:b7ccee7febd623bd765a02"
-                };
-
-                // Initialize Firebase if not already initialized
-                if (!firebase.apps.length) {
-                    firebase.initializeApp(configToUse);
+                let configToUse;
+                try { configToUse = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null; } catch(e) {}
+                
+                if (!configToUse) {
+                    configToUse = {
+                        apiKey: "AIzaSyCyNI7KZWUTt_wXWmVIfQCrGkTfhfSy8Vs", 
+                        authDomain: "uyif-19950.firebaseapp.com",
+                        databaseURL: "https://uyif-19950-default-rtdb.firebaseio.com", 
+                        projectId: "uyif-19950",
+                        storageBucket: "uyif-19950.firebasestorage.app", 
+                        messagingSenderId: "69721744423",
+                        appId: "1:69721744423:web:b7ccee7febd623bd765a02"
+                    };
                 }
                 
-                db = firebase.database();
-                auth = firebase.auth();
+                fbAppId = typeof __app_id !== 'undefined' ? __app_id : fbAppId;
+
+                const app = initializeApp(configToUse);
+                auth = getAuth(app); 
+                db = getFirestore(app);
+
+                // Authenticate properly using your environment tokens or anonymously
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
 
                 document.getElementById('project-id-display').innerText = configToUse.projectId;
                 statusEl.innerHTML = '<i class="fa-solid fa-circle text-[8px] text-green-500"></i> <span class="text-green-400">Connected</span>';
 
-                loadDatabaseTree();
+                loadFirestoreTree();
 
             } catch (error) {
-                console.error("Firebase initialization failed:", error);
-                statusEl.innerHTML = `<i class="fa-solid fa-circle text-[8px] text-red-500"></i> <span class="text-red-400" title="${error.message}">Error Connecting</span>`;
-                document.getElementById('file-tree').innerHTML = `<div class="text-red-400 p-2 text-xs">Failed to load: ${error.message}</div>`;
+                console.error("Initialization failed:", error);
+                statusEl.innerHTML = '<i class="fa-solid fa-circle text-[8px] text-red-500"></i> <span class="text-red-400">Error Connecting</span>';
+                document.getElementById('file-tree').innerHTML = `<div class="text-red-400 p-2 text-xs">Failed: ${error.message}</div>`;
             }
         }
 
-        function loadDatabaseTree() {
+        // Dynamically map Firestore paths for the file explorer tree
+        async function loadFirestoreTree() {
             if (!db) return;
             const treeContainer = document.getElementById('file-tree');
-            treeContainer.innerHTML = '<div class="text-zinc-500 p-2 text-xs">Fetching database nodes...</div>';
+            treeContainer.innerHTML = '<div class="text-slate-500 p-2 italic">Scanning Firestore paths...</div>';
 
-            db.ref('/').once('value', (snapshot) => {
+            try {
                 treeContainer.innerHTML = '';
-                const data = snapshot.val();
-                if (!data) {
-                    treeContainer.innerHTML = '<div class="text-zinc-500 p-2 text-xs">Database is empty or permissions denied.</div>';
-                    return;
-                }
-                buildTreeHTML(data, treeContainer, '/');
-            }, (error) => {
-                console.error("Read failed:", error);
-                treeContainer.innerHTML = `<div class="text-red-400 p-2 text-xs">Read error: ${error.message}<br><br>Check your Firebase Database Rules!</div>`;
-            });
-        }
 
-        function buildTreeHTML(nodeData, parentElement, currentPath) {
-            if (typeof nodeData !== 'object' || nodeData === null) return;
-
-            for (let key in nodeData) {
-                const value = nodeData[key];
-                const fullPath = currentPath === '/' ? `/${key}` : `${currentPath}/${key}`;
-                const isObject = typeof value === 'object' && value !== null;
-
+                // Target root structure used in your game: artifacts/{appId}/...
+                const rootBasePath = `artifacts/${fbAppId}`;
+                
                 const itemDiv = document.createElement('div');
                 itemDiv.className = "flex flex-col select-none";
 
                 const labelDiv = document.createElement('div');
-                labelDiv.className = "flex items-center space-x-2 py-1 px-2 rounded hover-bg text-xs cursor-pointer";
+                labelDiv.className = "flex items-center space-x-2 py-1.5 px-2 rounded hover-bg text-xs cursor-pointer text-yellow-400 font-bold";
+                labelDiv.innerHTML = `<i class="fa-solid fa-folder-open w-4"></i><span>artifacts / ${fbAppId}</span>`;
                 
-                let iconClass = isObject ? "fa-folder text-yellow-400" : "fa-file-code text-cyan-400";
-                labelDiv.innerHTML = `<i class="fa-solid ${iconClass} w-4"></i><span class="truncate">${key}</span>`;
+                const childrenContainer = document.createElement('div');
+                childrenContainer.className = "pl-4 border-l border-slate-800 ml-2 space-y-1 mt-1";
 
                 labelDiv.onclick = (e) => {
                     e.stopPropagation();
-                    document.getElementById('current-path').innerText = fullPath;
-                    document.getElementById('json-viewer').innerText = JSON.stringify(value, null, 2);
+                    childrenContainer.classList.toggle('hidden');
                 };
 
                 itemDiv.appendChild(labelDiv);
+                itemDiv.appendChild(childrenContainer);
+                treeContainer.appendChild(itemDiv);
 
-                if (isObject) {
-                    const childrenContainer = document.createElement('div');
-                    childrenContainer.className = "pl-4 border-l border-[#333] ml-2 hidden"; 
+                // Explore sub-branches: public data and users
+                await exploreSubCollections(rootBasePath, childrenContainer);
+
+            } catch (error) {
+                console.error("Tree scan error:", error);
+                treeContainer.innerHTML = `<div class="text-red-400 p-2 text-xs">Error scanning: ${error.message}</div>`;
+            }
+        }
+
+        async function exploreSubCollections(basePath, parentElement) {
+            // Standard branches your game utilizes
+            const knownPaths = [
+                `${basePath}/public/data/chat`,
+                `${basePath}/public/data/leaderboard`,
+                `${basePath}/public/data/rooms`,
+                `${basePath}/users`
+            ];
+
+            for (let path of knownPaths) {
+                try {
+                    const colRef = collection(db, path);
+                    const snapshot = await getDocs(colRef);
                     
-                    labelDiv.ondblclick = (e) => {
+                    if (snapshot.empty) continue;
+
+                    const folderName = path.split('/').pop();
+                    const folderDiv = document.createElement('div');
+                    folderDiv.className = "flex flex-col select-none";
+
+                    const fLabel = document.createElement('div');
+                    fLabel.className = "flex items-center space-x-2 py-1 px-2 rounded hover-bg text-xs cursor-pointer text-yellow-300";
+                    fLabel.innerHTML = `<i class="fa-solid fa-folder w-4"></i><span>${folderName} (${snapshot.size})</span>`;
+
+                    const docContainer = document.createElement('div');
+                    docContainer.className = "pl-4 border-l border-slate-800 ml-2 space-y-1 mt-1 hidden";
+
+                    fLabel.onclick = (e) => {
                         e.stopPropagation();
-                        childrenContainer.classList.toggle('hidden');
-                        let folderIcon = labelDiv.querySelector('i');
-                        folderIcon.className = childrenContainer.classList.contains('hidden') 
-                            ? "fa-solid fa-folder text-yellow-400 w-4" 
-                            : "fa-solid fa-folder-open text-yellow-400 w-4";
+                        docContainer.classList.toggle('hidden');
+                        let icon = fLabel.querySelector('i');
+                        icon.className = docContainer.classList.contains('hidden') ? "fa-solid fa-folder w-4" : "fa-solid fa-folder-open w-4";
                     };
 
-                    buildTreeHTML(value, childrenContainer, fullPath);
-                    itemDiv.appendChild(childrenContainer);
-                }
+                    snapshot.forEach(docSnap => {
+                        const docId = docSnap.id;
+                        const docData = docSnap.data();
+                        const fullPath = `${path}/${docId}`;
 
-                parentElement.appendChild(itemDiv);
+                        const docItem = document.createElement('div');
+                        docItem.className = "flex items-center space-x-2 py-1 px-2 rounded hover-bg text-xs cursor-pointer text-cyan-400";
+                        docItem.innerHTML = `<i class="fa-solid fa-file-code w-4"></i><span class="truncate">${docId}</span>`;
+
+                        docItem.onclick = (e) => {
+                            e.stopPropagation();
+                            document.getElementById('current-path').innerText = fullPath;
+                            document.getElementById('json-viewer').innerText = JSON.stringify(docData, null, 2);
+                        };
+
+                        docContainer.appendChild(docItem);
+                    });
+
+                    folderDiv.appendChild(fLabel);
+                    folderDiv.appendChild(docContainer);
+                    parentElement.appendChild(folderDiv);
+
+                } catch (err) {
+                    console.warn(`Skipped path ${path}:`, err.message);
+                }
             }
         }
 
