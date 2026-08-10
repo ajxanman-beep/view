@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Firebase Firestore Explorer - Neon Factory</title>
+    <title>Firebase Firestore Editor - Neon Factory</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- FontAwesome Icons -->
@@ -25,8 +25,13 @@
             <i class="fa-solid fa-folder-open text-yellow-500"></i>
             <span class="font-bold text-white">Firestore Project:</span> <span id="project-id-display" class="neon-text-blue">Connecting...</span>
         </div>
-        <div id="connection-status" class="flex items-center space-x-1 text-yellow-400">
-            <i class="fa-solid fa-circle text-[8px] animate-pulse"></i> <span>Initializing...</span>
+        <div class="flex items-center space-x-3">
+            <button onclick="openNewDocModal()" class="bg-blue-600/20 text-blue-400 hover:bg-blue-600 hover:text-white px-2 py-1 rounded border border-blue-500/30 transition text-[11px] font-bold">
+                <i class="fa-solid fa-plus mr-1"></i> New Document
+            </button>
+            <div id="connection-status" class="flex items-center space-x-1 text-yellow-400">
+                <i class="fa-solid fa-circle text-[8px] animate-pulse"></i> <span>Initializing...</span>
+            </div>
         </div>
     </header>
 
@@ -34,7 +39,7 @@
     <div class="flex flex-1 overflow-hidden">
         
         <!-- Left Sidebar: Collection & Document Tree -->
-        <aside class="w-1/3 min-w-[300px] bg-slate-950 border-r border-slate-800 flex flex-col">
+        <aside class="w-1/3 min-w-[320px] bg-slate-950 border-r border-slate-800 flex flex-col">
             <div class="p-3 text-[11px] font-bold uppercase tracking-wider text-slate-400 border-b border-slate-800 flex justify-between items-center bg-slate-900/50">
                 <span>Database Structure</span>
                 <button onclick="loadFirestoreTree()" class="hover:text-white px-2 py-1 rounded bg-slate-800 border border-slate-700 transition" title="Refresh Tree"><i class="fa-solid fa-rotate"></i></button>
@@ -44,27 +49,66 @@
             </div>
         </aside>
 
-        <!-- Right Pane: Document Viewer -->
-        <main class="flex-1 flex flex-col overflow-hidden bg-slate-900/40">
-            <div class="bg-slate-900 px-4 py-2 text-xs border-b border-slate-800 flex items-center space-x-2 text-slate-400">
-                <i class="fa-solid fa-file-lines text-cyan-400"></i>
-                <span id="current-path">Select a document from the tree</span>
+        <!-- Right Pane: Document Viewer & Editor -->
+        <main class="flex-1 flex flex-col overflow-hidden bg-slate-900/40 relative">
+            <div class="bg-slate-900 px-4 py-2 text-xs border-b border-slate-800 flex justify-between items-center text-slate-400">
+                <div class="flex items-center space-x-2 truncate pr-2">
+                    <i class="fa-solid fa-file-lines text-cyan-400 flex-shrink-0"></i>
+                    <span id="current-path" class="truncate">Select a document from the tree</span>
+                </div>
+                <div id="editor-actions" class="hidden flex items-center space-x-2 flex-shrink-0">
+                    <button onclick="saveCurrentDocument()" class="bg-green-600 hover:bg-green-500 text-white px-3 py-1 rounded text-[11px] font-bold transition shadow-[0_0_10px_rgba(34,197,94,0.3)]">
+                        <i class="fa-solid fa-save mr-1"></i> Save Changes
+                    </button>
+                </div>
             </div>
-            <div class="flex-1 p-4 overflow-auto">
-                <pre id="json-viewer" class="text-xs text-emerald-400 font-mono whitespace-pre-wrap">Click a collection folder to expand, and select a document to inspect its payload.</pre>
+            <div class="flex-1 p-4 overflow-hidden flex flex-col">
+                <textarea id="json-editor" class="w-full flex-1 bg-slate-950 border border-slate-800 rounded p-3 text-xs text-emerald-400 font-mono outline-none resize-none focus:border-slate-700 hidden" placeholder="Edit JSON payload here..."></textarea>
+                <div id="json-placeholder" class="flex-1 flex items-center justify-center text-slate-500 text-xs italic">
+                    Click a collection folder to expand, and select a document to inspect or edit its payload.
+                </div>
             </div>
         </main>
 
     </div>
 
-    <!-- Firebase SDK (Modular ES Modules matching your working game) -->
+    <!-- Modal for Creating New Document -->
+    <div id="new-doc-modal" class="fixed inset-0 bg-black/70 z-50 hidden flex items-center justify-center">
+        <div class="bg-slate-900 border border-slate-700 rounded-xl p-4 w-96 shadow-2xl space-y-3">
+            <h3 class="text-sm font-bold text-white flex items-center justify-between">
+                <span>Create New Document</span>
+                <button onclick="closeNewDocModal()" class="text-slate-400 hover:text-white"><i class="fa-solid fa-times"></i></button>
+            </h3>
+            <div>
+                <label class="text-[10px] text-slate-400 block mb-1 uppercase font-bold">Target Collection Path</label>
+                <input type="text" id="new-doc-path" placeholder="e.g. artifacts/neon-factory-party/public/data/chat" class="w-full bg-slate-950 border border-slate-700 rounded px-2.5 py-1.5 text-xs text-white font-mono outline-none">
+            </div>
+            <div>
+                <label class="text-[10px] text-slate-400 block mb-1 uppercase font-bold">Document ID (leave blank for auto-id)</label>
+                <input type="text" id="new-doc-id" placeholder="Optional ID" class="w-full bg-slate-950 border border-slate-700 rounded px-2.5 py-1.5 text-xs text-white font-mono outline-none">
+            </div>
+            <div>
+                <label class="text-[10px] text-slate-400 block mb-1 uppercase font-bold">Initial JSON Data</label>
+                <textarea id="new-doc-data" class="w-full h-28 bg-slate-950 border border-slate-700 rounded p-2 text-xs text-emerald-400 font-mono outline-none resize-none">{
+  "example": true
+}</textarea>
+            </div>
+            <div class="flex justify-end space-x-2 pt-1">
+                <button onclick="closeNewDocModal()" class="bg-slate-800 hover:bg-slate-700 text-slate-300 px-3 py-1.5 rounded text-xs font-bold transition">Cancel</button>
+                <button onclick="createDocument()" class="bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 rounded text-xs font-bold transition">Create</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Firebase SDK (Modular ES Modules) -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, doc, getDocs, setDoc, addDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         let db = null, auth = null;
         let fbAppId = 'neon-factory-party'; 
+        let activeDocRef = null;
 
         async function initFirebase() {
             const statusEl = document.getElementById('connection-status');
@@ -90,7 +134,6 @@
                 auth = getAuth(app); 
                 db = getFirestore(app);
 
-                // Authenticate properly using your environment tokens or anonymously
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                     await signInWithCustomToken(auth, __initial_auth_token);
                 } else {
@@ -109,7 +152,6 @@
             }
         }
 
-        // Dynamically map Firestore paths for the file explorer tree
         async function loadFirestoreTree() {
             if (!db) return;
             const treeContainer = document.getElementById('file-tree');
@@ -117,8 +159,6 @@
 
             try {
                 treeContainer.innerHTML = '';
-
-                // Target root structure used in your game: artifacts/{appId}/...
                 const rootBasePath = `artifacts/${fbAppId}`;
                 
                 const itemDiv = document.createElement('div');
@@ -140,7 +180,6 @@
                 itemDiv.appendChild(childrenContainer);
                 treeContainer.appendChild(itemDiv);
 
-                // Explore sub-branches: public data and users
                 await exploreSubCollections(rootBasePath, childrenContainer);
 
             } catch (error) {
@@ -150,7 +189,6 @@
         }
 
         async function exploreSubCollections(basePath, parentElement) {
-            // Standard branches your game utilizes
             const knownPaths = [
                 `${basePath}/public/data/chat`,
                 `${basePath}/public/data/leaderboard`,
@@ -194,8 +232,15 @@
 
                         docItem.onclick = (e) => {
                             e.stopPropagation();
+                            activeDocRef = doc(db, path, docId);
                             document.getElementById('current-path').innerText = fullPath;
-                            document.getElementById('json-viewer').innerText = JSON.stringify(docData, null, 2);
+                            document.getElementById('json-placeholder').classList.add('hidden');
+                            
+                            const editor = document.getElementById('json-editor');
+                            editor.classList.remove('hidden');
+                            editor.value = JSON.stringify(docData, null, 2);
+                            
+                            document.getElementById('editor-actions').classList.remove('hidden');
                         };
 
                         docContainer.appendChild(docItem);
@@ -210,6 +255,55 @@
                 }
             }
         }
+
+        // Global functions exposed to window for buttons
+        window.saveCurrentDocument = async function() {
+            if (!activeDocRef) return;
+            const editor = document.getElementById('json-editor');
+            try {
+                const parsedData = JSON.parse(editor.value);
+                await setDoc(activeDocRef, parsedData);
+                alert("Document successfully updated in Firestore!");
+            } catch (err) {
+                alert("Save failed! Make sure your JSON syntax is valid.\n\nError: " + err.message);
+            }
+        };
+
+        window.openNewDocModal = function() {
+            document.getElementById('new-doc-modal').classList.remove('hidden');
+        };
+
+        window.closeNewDocModal = function() {
+            document.getElementById('new-doc-modal').classList.add('hidden');
+        };
+
+        window.createDocument = async function() {
+            const path = document.getElementById('new-doc-path').value.trim();
+            const docId = document.getElementById('new-doc-id').value.trim();
+            const rawData = document.getElementById('new-doc-data').value;
+
+            if (!path) {
+                alert("Please specify a target collection path.");
+                return;
+            }
+
+            try {
+                const parsedData = JSON.parse(rawData);
+                const colRef = collection(db, path);
+
+                if (docId) {
+                    await setDoc(doc(colRef, docId), parsedData);
+                } else {
+                    await addDoc(colRef, parsedData);
+                }
+
+                alert("Document created successfully!");
+                closeNewDocModal();
+                loadFirestoreTree();
+            } catch (err) {
+                alert("Creation failed. Check your JSON format or collection path.\n\nError: " + err.message);
+            }
+        };
 
         window.onload = initFirebase;
     </script>
