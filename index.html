@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Firebase Firestore Manager - Neon Factory</title>
+    <title>Firebase Firestore Live Manager - Neon Factory</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- FontAwesome Icons -->
@@ -41,11 +41,11 @@
         <!-- Left Sidebar: Collection & Document Tree -->
         <aside class="w-1/3 min-w-[340px] bg-slate-950 border-r border-slate-800 flex flex-col">
             <div class="p-3 text-[11px] font-bold uppercase tracking-wider text-slate-400 border-b border-slate-800 flex justify-between items-center bg-slate-900/50">
-                <span>Database Structure</span>
-                <button onclick="loadFirestoreTree()" class="hover:text-white px-2 py-1 rounded bg-slate-800 border border-slate-700 transition" title="Refresh Tree"><i class="fa-solid fa-rotate"></i></button>
+                <span>Database Structure (Live)</span>
+                <button onclick="initLiveTree()" class="hover:text-white px-2 py-1 rounded bg-slate-800 border border-slate-700 transition" title="Rescan Tree"><i class="fa-solid fa-rotate"></i></button>
             </div>
             <div id="file-tree" class="flex-1 overflow-y-auto p-2 text-xs space-y-1">
-                <div class="text-slate-500 p-2 italic">Scanning Firestore collections...</div>
+                <div class="text-slate-500 p-2 italic">Connecting to Firestore streams...</div>
             </div>
         </aside>
 
@@ -71,7 +71,7 @@
             <div class="flex-1 p-4 overflow-hidden flex flex-col">
                 <textarea id="json-editor" class="w-full flex-1 bg-slate-950 border border-slate-800 rounded p-3 text-xs text-emerald-400 font-mono outline-none resize-none focus:border-slate-700 hidden" placeholder="Edit JSON payload here..."></textarea>
                 <div id="json-placeholder" class="flex-1 flex items-center justify-center text-slate-500 text-xs italic">
-                    Click a collection folder to expand, and select a document to inspect, edit, rename, or delete its payload.
+                    Click a collection folder to expand, and select a document to inspect or live-edit its payload.
                 </div>
             </div>
         </main>
@@ -116,7 +116,6 @@
             <div>
                 <label class="text-[10px] text-slate-400 block mb-1 uppercase font-bold">New Document ID</label>
                 <input type="text" id="rename-doc-id" placeholder="New ID name" class="w-full bg-slate-950 border border-slate-700 rounded px-2.5 py-1.5 text-xs text-white font-mono outline-none">
-                <p class="text-[9px] text-slate-500 mt-1">Firestore does not allow direct server-side renames, so this will copy data to the new ID and safely remove the old one.</p>
             </div>
             <div class="flex justify-end space-x-2 pt-1">
                 <button onclick="closeRenameModal()" class="bg-slate-800 hover:bg-slate-700 text-slate-300 px-3 py-1.5 rounded text-xs font-bold transition">Cancel</button>
@@ -129,12 +128,14 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, doc, getDoc, getDocs, setDoc, addDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, doc, getDoc, setDoc, addDoc, deleteDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         let db = null, auth = null;
         let fbAppId = 'neon-factory-party'; 
         let activeDocRef = null;
         let activeCollectionPath = null;
+        let activeDocUnsubscribe = null;
+        let collectionUnsubscribers = {};
 
         async function initFirebase() {
             const statusEl = document.getElementById('connection-status');
@@ -167,9 +168,9 @@
                 }
 
                 document.getElementById('project-id-display').innerText = configToUse.projectId;
-                statusEl.innerHTML = '<i class="fa-solid fa-circle text-[8px] text-green-500"></i> <span class="text-green-400">Connected</span>';
+                statusEl.innerHTML = '<i class="fa-solid fa-circle text-[8px] text-green-500"></i> <span class="text-green-400">Connected (Live Sync)</span>';
 
-                loadFirestoreTree();
+                initLiveTree();
 
             } catch (error) {
                 console.error("Initialization failed:", error);
@@ -178,10 +179,18 @@
             }
         }
 
-        async function loadFirestoreTree() {
+        // Clean up active listeners when rescanning/restarting
+        function clearAllListeners() {
+            if (activeDocUnsubscribe) { activeDocUnsubscribe(); activeDocUnsubscribe = null; }
+            Object.values(collectionUnsubscribers).forEach(unsub => unsub());
+            collectionUnsubscribers = {};
+        }
+
+        async function initLiveTree() {
             if (!db) return;
+            clearAllListeners();
             const treeContainer = document.getElementById('file-tree');
-            treeContainer.innerHTML = '<div class="text-slate-500 p-2 italic">Scanning Firestore paths...</div>';
+            treeContainer.innerHTML = '<div class="text-slate-500 p-2 italic">Establishing live streams...</div>';
 
             try {
                 treeContainer.innerHTML = '';
@@ -206,15 +215,15 @@
                 itemDiv.appendChild(childrenContainer);
                 treeContainer.appendChild(itemDiv);
 
-                await exploreSubCollections(rootBasePath, childrenContainer);
+                setupLiveSubCollections(rootBasePath, childrenContainer);
 
             } catch (error) {
-                console.error("Tree scan error:", error);
-                treeContainer.innerHTML = `<div class="text-red-400 p-2 text-xs">Error scanning: ${error.message}</div>`;
+                console.error("Live tree error:", error);
+                treeContainer.innerHTML = `<div class="text-red-400 p-2 text-xs">Error: ${error.message}</div>`;
             }
         }
 
-        async function exploreSubCollections(basePath, parentElement) {
+        function setupLiveSubCollections(basePath, parentElement) {
             const knownPaths = [
                 `${basePath}/public/data/chat`,
                 `${basePath}/public/data/leaderboard`,
@@ -222,30 +231,40 @@
                 `${basePath}/users`
             ];
 
-            for (let path of knownPaths) {
-                try {
-                    const colRef = collection(db, path);
-                    const snapshot = await getDocs(colRef);
-                    
-                    if (snapshot.empty) continue;
+            knownPaths.forEach(path => {
+                const colRef = collection(db, path);
+                
+                const folderName = path.split('/').pop();
+                const folderDiv = document.createElement('div');
+                folderDiv.className = "flex flex-col select-none";
 
-                    const folderName = path.split('/').pop();
-                    const folderDiv = document.createElement('div');
-                    folderDiv.className = "flex flex-col select-none";
+                const fLabel = document.createElement('div');
+                fLabel.className = "flex items-center space-x-2 py-1 px-2 rounded hover-bg text-xs cursor-pointer text-yellow-300";
+                fLabel.innerHTML = `<i class="fa-solid fa-folder w-4"></i><span>${folderName} (...)</span>`;
 
-                    const fLabel = document.createElement('div');
-                    fLabel.className = "flex items-center space-x-2 py-1 px-2 rounded hover-bg text-xs cursor-pointer text-yellow-300";
-                    fLabel.innerHTML = `<i class="fa-solid fa-folder w-4"></i><span>${folderName} (${snapshot.size})</span>`;
+                const docContainer = document.createElement('div');
+                docContainer.className = "pl-4 border-l border-slate-800 ml-2 space-y-1 mt-1 hidden";
 
-                    const docContainer = document.createElement('div');
-                    docContainer.className = "pl-4 border-l border-slate-800 ml-2 space-y-1 mt-1 hidden";
+                fLabel.onclick = (e) => {
+                    e.stopPropagation();
+                    docContainer.classList.toggle('hidden');
+                    let icon = fLabel.querySelector('i');
+                    icon.className = docContainer.classList.contains('hidden') ? "fa-solid fa-folder w-4" : "fa-solid fa-folder-open w-4";
+                };
 
-                    fLabel.onclick = (e) => {
-                        e.stopPropagation();
-                        docContainer.classList.toggle('hidden');
-                        let icon = fLabel.querySelector('i');
-                        icon.className = docContainer.classList.contains('hidden') ? "fa-solid fa-folder w-4" : "fa-solid fa-folder-open w-4";
-                    };
+                folderDiv.appendChild(fLabel);
+                folderDiv.appendChild(docContainer);
+                parentElement.appendChild(folderDiv);
+
+                // Attach real-time snapshot listener to the collection
+                const unsubscribe = onSnapshot(colRef, (snapshot) => {
+                    docContainer.innerHTML = '';
+                    fLabel.querySelector('span').innerText = `${folderName} (${snapshot.size})`;
+
+                    if (snapshot.empty) {
+                        docContainer.innerHTML = '<div class="text-slate-600 px-2 py-0.5 text-[10px] italic">empty</div>';
+                        return;
+                    }
 
                     snapshot.forEach(docSnap => {
                         const docId = docSnap.id;
@@ -258,29 +277,44 @@
 
                         docItem.onclick = (e) => {
                             e.stopPropagation();
-                            activeDocRef = doc(db, path, docId);
-                            activeCollectionPath = path;
-                            document.getElementById('current-path').innerText = fullPath;
-                            document.getElementById('json-placeholder').classList.add('hidden');
-                            
-                            const editor = document.getElementById('json-editor');
-                            editor.classList.remove('hidden');
-                            editor.value = JSON.stringify(docData, null, 2);
-                            
-                            document.getElementById('editor-actions').classList.remove('hidden');
+                            selectDocument(path, docId, fullPath, docData);
                         };
 
                         docContainer.appendChild(docItem);
                     });
+                }, err => {
+                    console.warn(`Stream error on ${path}:`, err.message);
+                });
 
-                    folderDiv.appendChild(fLabel);
-                    folderDiv.appendChild(docContainer);
-                    parentElement.appendChild(folderDiv);
+                collectionUnsubscribers[path] = unsubscribe;
+            });
+        }
 
-                } catch (err) {
-                    console.warn(`Skipped path ${path}:`, err.message);
-                }
+        function selectDocument(path, docId, fullPath, initialData) {
+            if (activeDocUnsubscribe) {
+                activeDocUnsubscribe();
+                activeDocUnsubscribe = null;
             }
+
+            activeDocRef = doc(db, path, docId);
+            activeCollectionPath = path;
+            document.getElementById('current-path').innerText = fullPath;
+            document.getElementById('json-placeholder').classList.add('hidden');
+            
+            const editor = document.getElementById('json-editor');
+            editor.classList.remove('hidden');
+            editor.value = JSON.stringify(initialData, null, 2);
+            document.getElementById('editor-actions').classList.remove('hidden');
+
+            // Attach a live listener to the specific open document so updates from external sources (or your game) instantly sync into the text editor
+            activeDocUnsubscribe = onSnapshot(activeDocRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    // Only update if the user isn't actively typing/focusing the editor to prevent cursor jumping
+                    if (document.activeElement !== editor) {
+                        editor.value = JSON.stringify(docSnap.data(), null, 2);
+                    }
+                }
+            });
         }
 
         // Global functions exposed to window
@@ -290,7 +324,6 @@
             try {
                 const parsedData = JSON.parse(editor.value);
                 await setDoc(activeDocRef, parsedData);
-                alert("Document successfully updated!");
             } catch (err) {
                 alert("Save failed! Check your JSON syntax.\n\nError: " + err.message);
             }
@@ -301,17 +334,14 @@
             if (!confirm("Are you sure you want to permanently delete this document?")) return;
 
             try {
+                if (activeDocUnsubscribe) { activeDocUnsubscribe(); activeDocUnsubscribe = null; }
                 await deleteDoc(activeDocRef);
-                alert("Document deleted successfully.");
                 
-                // Reset viewer
                 activeDocRef = null;
                 document.getElementById('json-editor').classList.add('hidden');
                 document.getElementById('json-placeholder').classList.remove('hidden');
                 document.getElementById('editor-actions').classList.add('hidden');
                 document.getElementById('current-path').innerText = "Select a document from the tree";
-                
-                loadFirestoreTree();
             } catch (err) {
                 alert("Delete failed: " + err.message);
             }
@@ -335,7 +365,6 @@
             }
 
             try {
-                // 1. Fetch current document data
                 const docSnap = await getDoc(activeDocRef);
                 if (!docSnap.exists()) {
                     alert("Original document no longer exists.");
@@ -343,21 +372,12 @@
                 }
                 const data = docSnap.data();
 
-                // 2. Create new document reference and save data there
                 const newDocRef = doc(db, activeCollectionPath, newId);
                 await setDoc(newDocRef, data);
-
-                // 3. Delete old document reference
                 await deleteDoc(activeDocRef);
 
-                alert("Document renamed successfully!");
                 closeRenameModal();
-                
-                // Update active reference to the new one
-                activeDocRef = newDocRef;
-                document.getElementById('current-path').innerText = `${activeCollectionPath}/${newId}`;
-
-                loadFirestoreTree();
+                selectDocument(activeCollectionPath, newId, `${activeCollectionPath}/${newId}`, data);
             } catch (err) {
                 alert("Rename failed: " + err.message);
             }
@@ -391,9 +411,7 @@
                     await addDoc(colRef, parsedData);
                 }
 
-                alert("Document created successfully!");
                 closeNewDocModal();
-                loadFirestoreTree();
             } catch (err) {
                 alert("Creation failed. Check your JSON format or collection path.\n\nError: " + err.message);
             }
