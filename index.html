@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Firebase File Explorer - Neon Factory</title>
+    <!-- Tailwind CSS for modern styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- FontAwesome for file/folder icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body { background-color: #1e1e1e; color: #d4d4d4; font-family: ui-monospace, monospace; }
+        .sidebar { background-color: #252526; border-right: 1px solid #333; }
+        .viewer { background-color: #1e1e1e; }
+        tree-node { cursor: pointer; }
+        .hover-bg:hover { background-color: #2a2d2e; }
+    </style>
+</head>
+<body class="h-screen flex flex-col overflow-hidden">
+
+    <!-- Top Navigation / Header -->
+    <header class="bg-[#333333] px-4 py-2 flex justify-between items-center text-xs border-b border-[#222]">
+        <div class="flex items-center space-x-2">
+            <i class="fa-solid fa-folder-open text-yellow-500"></i>
+            <span class="font-bold text-white">Project:</span> <span id="project-id-display" class="text-cyan-400">Loading...</span>
+        </div>
+        <div id="connection-status" class="flex items-center space-x-1 text-yellow-400">
+            <i class="fa-solid fa-circle text-[8px]"></i> <span>Connecting to Firebase...</span>
+        </div>
+    </header>
+
+    <!-- Main Explorer Layout -->
+    <div class="flex flex-1 overflow-hidden">
+        
+        <!-- Left Sidebar: File Tree Explorer -->
+        <aside class="sidebar w-1/3 min-w-[280px] flex flex-col">
+            <div class="p-2 text-[11px] font-bold uppercase tracking-wider text-zinc-400 border-b border-[#333] flex justify-space">
+                <span>Database Explorer</span>
+                <button onclick="loadDatabaseTree()" class="ml-auto hover:text-white" title="Refresh Tree"><i class="fa-solid fa-rotate"></i></button>
+            </div>
+            <div id="file-tree" class="flex-1 overflow-y-auto p-2 text-sm">
+                <!-- Tree items injected dynamically -->
+            </div>
+        </aside>
+
+        <!-- Right Pane: File/Node Viewer -->
+        <main class="viewer flex-1 flex flex-col overflow-hidden">
+            <div class="bg-[#2d2d2d] px-4 py-2 text-xs border-b border-[#333] flex items-center space-x-2 text-zinc-400">
+                <i class="fa-solid fa-file-lines"></i>
+                <span id="current-path">/ (root)</span>
+            </div>
+            <div class="flex-1 p-4 overflow-auto">
+                <pre id="json-viewer" class="text-xs text-emerald-400 font-mono whitespace-pre-wrap">Select a node from the explorer tree to view its data.</pre>
+            </div>
+        </main>
+
+    </div>
+
+    <!-- Firebase SDKs (Compat version for simplicity) -->
+    <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-database-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-auth-compat.js"></script>
+
+    <script>
+        // Your provided variables & config setup
+        let db = null, auth = null, userId = null;
+        let isSaving = false, isVisiting = false, currentRoomId = null;
+        let fbAppId = 'neon-factory-party'; 
+        let username = localStorage.getItem('neon_username') || "Player_" + Math.floor(Math.random() * 9999);
+        let roomUnsubscribe = null, cursorUnsubscribe = null, cursorInterval = null;
+        let lastPointerType = 'mouse', lastActionTime = 0;
+
+        async function initFirebase() {
+            try {
+                let configToUse;
+                try { configToUse = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null; } catch(e) {}
+                if (!configToUse) {
+                    configToUse = {
+                        apiKey: "AIzaSyCyNI7KZWUTt_wXWmVIfQCrGkTfhfSy8Vs", 
+                        authDomain: "uyif-19950.firebaseapp.com",
+                        databaseURL: "https://uyif-19950-default-rtdb.firebaseio.com", 
+                        projectId: "uyif-19950",
+                        storageBucket: "uyif-19950.firebasestorage.app", 
+                        messagingSenderId: "69721744423",
+                        appId: "1:69721744423:web:b7ccee7febd623bd765a02"
+                    };
+                }
+
+                // Initialize Firebase App
+                const app = firebase.initializeApp(configToUse);
+                db = firebase.database(app);
+                auth = firebase.auth(app);
+
+                document.getElementById('project-id-display').innerText = configToUse.projectId;
+                document.getElementById('connection-status').innerHTML = '<i class="fa-solid fa-circle text-[8px] text-green-500"></i> <span class="text-green-400">Connected</span>';
+
+                // Load initial tree structure
+                loadDatabaseTree();
+
+            } catch (error) {
+                console.error("Firebase initialization failed:", error);
+                document.getElementById('connection-status').innerHTML = '<i class="fa-solid fa-circle text-[8px] text-red-500"></i> <span class="text-red-400">Connection Failed</span>';
+            }
+        }
+
+        // Render Database Tree in Explorer Style
+        function loadDatabaseTree() {
+            if (!db) return;
+            const treeContainer = document.getElementById('file-tree');
+            treeContainer.innerHTML = '<div class="text-zinc-500 p-2 text-xs">Scanning database...</div>';
+
+            db.ref('/').once('value', (snapshot) => {
+                treeContainer.innerHTML = '';
+                const data = snapshot.val();
+                if (!data) {
+                    treeContainer.innerHTML = '<div class="text-zinc-500 p-2 text-xs">Database is empty.</div>';
+                    return;
+                }
+                buildTreeHTML(data, treeContainer, '/');
+            });
+        }
+
+        function buildTreeHTML(nodeData, parentElement, currentPath) {
+            if (typeof nodeData !== 'object' || nodeData === null) return;
+
+            for (let key in nodeData) {
+                const value = nodeData[key];
+                const fullPath = currentPath === '/' ? `/${key}` : `${currentPath}/${key}`;
+                const isObject = typeof value === 'object' && value !== null;
+
+                const itemDiv = document.createElement('div');
+                itemDiv.className = "flex flex-col select-none";
+
+                const labelDiv = document.createElement('div');
+                labelDiv.className = "flex items-center space-x-2 py-1 px-2 rounded hover-bg text-xs cursor-pointer";
+                
+                let iconClass = isObject ? "fa-folder text-yellow-400" : "fa-file-code text-cyan-400";
+                labelDiv.innerHTML = `<i class="fa-solid ${iconClass} w-4"></i><span class="truncate">${key}</span>`;
+
+                labelDiv.onclick = (e) => {
+                    e.stopPropagation();
+                    document.getElementById('current-path').innerText = fullPath;
+                    document.getElementById('json-viewer').innerText = JSON.stringify(value, null, 2);
+                };
+
+                itemDiv.appendChild(labelDiv);
+
+                if (isObject) {
+                    const childrenContainer = document.createElement('div');
+                    childrenContainer.className = "pl-4 border-l border-[#333] ml-2 hidden"; // start collapsed
+                    
+                    // Toggle collapse on folder click if desired, or let it populate
+                    labelDiv.ondblclick = (e) => {
+                        e.stopPropagation();
+                        childrenContainer.classList.toggle('hidden');
+                        let folderIcon = labelDiv.querySelector('i');
+                        folderIcon.className = childrenContainer.classList.contains('hidden') 
+                            ? "fa-solid fa-folder text-yellow-400 w-4" 
+                            : "fa-solid fa-folder-open text-yellow-400 w-4";
+                    };
+
+                    buildTreeHTML(value, childrenContainer, fullPath);
+                    itemDiv.appendChild(childrenContainer);
+                }
+
+                parentElement.appendChild(itemDiv);
+            }
+        }
+
+        // Run initialization on load
+        window.onload = initFirebase;
+    </script>
+</body>
+</html>
