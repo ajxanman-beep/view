@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Firebase Firestore Editor - Neon Factory</title>
+    <title>Firebase Firestore Manager - Neon Factory</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- FontAwesome Icons -->
@@ -39,7 +39,7 @@
     <div class="flex flex-1 overflow-hidden">
         
         <!-- Left Sidebar: Collection & Document Tree -->
-        <aside class="w-1/3 min-w-[320px] bg-slate-950 border-r border-slate-800 flex flex-col">
+        <aside class="w-1/3 min-w-[340px] bg-slate-950 border-r border-slate-800 flex flex-col">
             <div class="p-3 text-[11px] font-bold uppercase tracking-wider text-slate-400 border-b border-slate-800 flex justify-between items-center bg-slate-900/50">
                 <span>Database Structure</span>
                 <button onclick="loadFirestoreTree()" class="hover:text-white px-2 py-1 rounded bg-slate-800 border border-slate-700 transition" title="Refresh Tree"><i class="fa-solid fa-rotate"></i></button>
@@ -57,6 +57,12 @@
                     <span id="current-path" class="truncate">Select a document from the tree</span>
                 </div>
                 <div id="editor-actions" class="hidden flex items-center space-x-2 flex-shrink-0">
+                    <button onclick="openRenameModal()" class="bg-amber-600/20 text-amber-400 hover:bg-amber-600 hover:text-white px-2.5 py-1 rounded text-[11px] font-bold transition border border-amber-500/30" title="Move or Rename ID">
+                        <i class="fa-solid fa-pen-to-square mr-1"></i> Rename / Move
+                    </button>
+                    <button onclick="deleteCurrentDocument()" class="bg-red-600/20 text-red-400 hover:bg-red-600 hover:text-white px-2.5 py-1 rounded text-[11px] font-bold transition border border-red-500/30" title="Delete Document">
+                        <i class="fa-solid fa-trash mr-1"></i> Delete
+                    </button>
                     <button onclick="saveCurrentDocument()" class="bg-green-600 hover:bg-green-500 text-white px-3 py-1 rounded text-[11px] font-bold transition shadow-[0_0_10px_rgba(34,197,94,0.3)]">
                         <i class="fa-solid fa-save mr-1"></i> Save Changes
                     </button>
@@ -65,7 +71,7 @@
             <div class="flex-1 p-4 overflow-hidden flex flex-col">
                 <textarea id="json-editor" class="w-full flex-1 bg-slate-950 border border-slate-800 rounded p-3 text-xs text-emerald-400 font-mono outline-none resize-none focus:border-slate-700 hidden" placeholder="Edit JSON payload here..."></textarea>
                 <div id="json-placeholder" class="flex-1 flex items-center justify-center text-slate-500 text-xs italic">
-                    Click a collection folder to expand, and select a document to inspect or edit its payload.
+                    Click a collection folder to expand, and select a document to inspect, edit, rename, or delete its payload.
                 </div>
             </div>
         </main>
@@ -100,15 +106,35 @@
         </div>
     </div>
 
+    <!-- Modal for Renaming / Moving Document ID -->
+    <div id="rename-modal" class="fixed inset-0 bg-black/70 z-50 hidden flex items-center justify-center">
+        <div class="bg-slate-900 border border-slate-700 rounded-xl p-4 w-96 shadow-2xl space-y-3">
+            <h3 class="text-sm font-bold text-white flex items-center justify-between">
+                <span>Rename / Move Document</span>
+                <button onclick="closeRenameModal()" class="text-slate-400 hover:text-white"><i class="fa-solid fa-times"></i></button>
+            </h3>
+            <div>
+                <label class="text-[10px] text-slate-400 block mb-1 uppercase font-bold">New Document ID</label>
+                <input type="text" id="rename-doc-id" placeholder="New ID name" class="w-full bg-slate-950 border border-slate-700 rounded px-2.5 py-1.5 text-xs text-white font-mono outline-none">
+                <p class="text-[9px] text-slate-500 mt-1">Firestore does not allow direct server-side renames, so this will copy data to the new ID and safely remove the old one.</p>
+            </div>
+            <div class="flex justify-end space-x-2 pt-1">
+                <button onclick="closeRenameModal()" class="bg-slate-800 hover:bg-slate-700 text-slate-300 px-3 py-1.5 rounded text-xs font-bold transition">Cancel</button>
+                <button onclick="executeRenameDocument()" class="bg-amber-600 hover:bg-amber-500 text-white px-3 py-1.5 rounded text-xs font-bold transition">Confirm Rename</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Firebase SDK (Modular ES Modules) -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, doc, getDocs, setDoc, addDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, doc, getDoc, getDocs, setDoc, addDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         let db = null, auth = null;
         let fbAppId = 'neon-factory-party'; 
         let activeDocRef = null;
+        let activeCollectionPath = null;
 
         async function initFirebase() {
             const statusEl = document.getElementById('connection-status');
@@ -233,6 +259,7 @@
                         docItem.onclick = (e) => {
                             e.stopPropagation();
                             activeDocRef = doc(db, path, docId);
+                            activeCollectionPath = path;
                             document.getElementById('current-path').innerText = fullPath;
                             document.getElementById('json-placeholder').classList.add('hidden');
                             
@@ -256,16 +283,83 @@
             }
         }
 
-        // Global functions exposed to window for buttons
+        // Global functions exposed to window
         window.saveCurrentDocument = async function() {
             if (!activeDocRef) return;
             const editor = document.getElementById('json-editor');
             try {
                 const parsedData = JSON.parse(editor.value);
                 await setDoc(activeDocRef, parsedData);
-                alert("Document successfully updated in Firestore!");
+                alert("Document successfully updated!");
             } catch (err) {
-                alert("Save failed! Make sure your JSON syntax is valid.\n\nError: " + err.message);
+                alert("Save failed! Check your JSON syntax.\n\nError: " + err.message);
+            }
+        };
+
+        window.deleteCurrentDocument = async function() {
+            if (!activeDocRef) return;
+            if (!confirm("Are you sure you want to permanently delete this document?")) return;
+
+            try {
+                await deleteDoc(activeDocRef);
+                alert("Document deleted successfully.");
+                
+                // Reset viewer
+                activeDocRef = null;
+                document.getElementById('json-editor').classList.add('hidden');
+                document.getElementById('json-placeholder').classList.remove('hidden');
+                document.getElementById('editor-actions').classList.add('hidden');
+                document.getElementById('current-path').innerText = "Select a document from the tree";
+                
+                loadFirestoreTree();
+            } catch (err) {
+                alert("Delete failed: " + err.message);
+            }
+        };
+
+        window.openRenameModal = function() {
+            if (!activeDocRef) return;
+            document.getElementById('rename-doc-id').value = activeDocRef.id;
+            document.getElementById('rename-modal').classList.remove('hidden');
+        };
+
+        window.closeRenameModal = function() {
+            document.getElementById('rename-modal').classList.add('hidden');
+        };
+
+        window.executeRenameDocument = async function() {
+            const newId = document.getElementById('rename-doc-id').value.trim();
+            if (!newId || !activeDocRef || !activeCollectionPath) {
+                alert("Please provide a valid new Document ID.");
+                return;
+            }
+
+            try {
+                // 1. Fetch current document data
+                const docSnap = await getDoc(activeDocRef);
+                if (!docSnap.exists()) {
+                    alert("Original document no longer exists.");
+                    return;
+                }
+                const data = docSnap.data();
+
+                // 2. Create new document reference and save data there
+                const newDocRef = doc(db, activeCollectionPath, newId);
+                await setDoc(newDocRef, data);
+
+                // 3. Delete old document reference
+                await deleteDoc(activeDocRef);
+
+                alert("Document renamed successfully!");
+                closeRenameModal();
+                
+                // Update active reference to the new one
+                activeDocRef = newDocRef;
+                document.getElementById('current-path').innerText = `${activeCollectionPath}/${newId}`;
+
+                loadFirestoreTree();
+            } catch (err) {
+                alert("Rename failed: " + err.message);
             }
         };
 
